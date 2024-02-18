@@ -1,0 +1,165 @@
+--take dataset from https://www.kaggle.com/tylerx/flights-and-airports-data using 
+--curl and cookies.txt or download files and copy them to directory opt in docker-hive/hive-server container
+
+cd docker-hive
+docker-compose exec hive-server bash
+
+--Create folder on HDFS:
+hdfs dfs -mkdir /user/hive/warehouse/idata
+
+--Upload data to HDFS:
+hdfs dfs -put airports.csv /user/hive/warehouse/idata/airports
+hdfs dfs -put flights.csv /user/hive/warehouse/idata/flights
+hdfs dfs -put raw-flight-data.csv /user/hive/warehouse/idata/raw_flight_data
+
+hdfs dfs -mkdir /user/hive/warehouse
+hdfs dfs -mkdir /user/hive/warehouse/idata
+hdfs dfs -mkdir /user/hive/warehouse/idata/airports
+hdfs dfs -mkdir /user/hive/warehouse/idata/flights
+hdfs dfs -mkdir /user/hive/warehouse/idata/raw_flight_data
+hdfs dfs -put airports.csv /user/hive/warehouse/idata/airports
+hdfs dfs -put flights.csv /user/hive/warehouse/idata/flights
+hdfs dfs -put raw-flight-data.csv /user/hive/warehouse/idata/raw_flight_data
+
+--Check that data exist:
+hdfs dfs -ls /user/hive/warehouse/idata/airports
+hdfs dfs -ls /user/hive/warehouse/idata/flights
+hdfs dfs -ls /user/hive/warehouse/idata/raw_flight_data
+
+drop database otus cascade;
+
+create database otus;
+
+--Create external Hive tables:
+drop table if exists otus.airports;
+CREATE EXTERNAL TABLE otus.airports
+      (id Int,
+       city STRING,
+       state STRING,
+       name STRING)
+      ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+      WITH SERDEPROPERTIES (
+       "quoteChar" = "@",   
+       "separatorChar" = ","
+      ) 
+      STORED AS TEXTFILE
+      LOCATION '/user/hive/warehouse/idata/airports'
+      tblproperties("skip.header.line.count"="1"
+      );
+drop table if exists otus.flights;
+CREATE EXTERNAL TABLE otus.flights
+      (	DayofMonth Int,
+		DayOfWeek Int,
+		Carrier String,
+		OriginAirportID Int,
+		DestAirportID Int,
+		DepDelay Int,
+		ArrDelay Int
+		)
+      ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+      WITH SERDEPROPERTIES (
+       "quoteChar" = "@",   
+       "separatorChar" = ","
+      ) 
+      STORED AS TEXTFILE
+      LOCATION '/user/hive/warehouse/idata/flights'
+      tblproperties("skip.header.line.count"="1"
+      );
+drop table if exists otus.raw_flight_data;
+CREATE EXTERNAL TABLE otus.raw_flight_data 
+      (DayofMonth Int,
+		DayOfWeek Int,
+		Carrier String,
+		OriginAirportID Int,
+		DestAirportID Int,
+		DepDelay Int,
+		ArrDelay Int)
+      ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+      WITH SERDEPROPERTIES (
+       "quoteChar" = "@",   
+       "separatorChar" = ","
+      ) 
+      STORED AS TEXTFILE
+      LOCATION '/user/hive/warehouse/idata/raw_flight_data'
+      tblproperties("skip.header.line.count"="1"
+      );
+
+
+drop table otus.top_count_of_airports;
+CREATE EXTERNAL TABLE otus.top_count_of_airports 
+      (state string,
+		airports_ids string,
+		cnt int
+		
+		)
+		COMMENT 'states with more than 10 airports, with count and airports ids'
+;
+
+--insert into otus.top_count_of_airports 
+insert overwrite table otus.top_count_of_airports 
+select state, concat_ws(',', collect_set(id)) airport_ids,
+count(*) cnt from otus.airports 
+where state is not null
+group by state
+having count(*) >10 
+order by cnt desc, state ;
+--select * from otus.top_count_of_airports;
+drop table otus.low_count_of_airports;
+CREATE EXTERNAL TABLE otus.low_count_of_airports 
+      (state string,
+		airports_ids string,
+		cnt int
+		)
+		COMMENT 'states with less than 3 airports, with count and airports ids'
+;
+insert overwrite table otus.low_count_of_airports 
+select state, concat_ws(',', collect_set(id)) airport_ids, 
+count(*) cnt from otus.airports 
+where state is not null
+group by state--, city 
+having count(*) >10 
+order by cnt desc, state ;
+--select * from otus.low_count_of_airports;
+--SHOW TBLPROPERTIES otus.top_count_of_airports;
+drop table otus.flights_delays_statistics;
+CREATE TABLE otus.flights_delays_statistics
+      (origineairportid int,
+       carrier STRING,
+       delayinfo STRING,
+       cnt int,
+       avgdelay int,
+       state string,
+       name string)
+		COMMENT 'table contains statistics of delayed and not delayed flights of all us carriers'
+;
+insert overwrite table otus.flights_delays_statistics
+select a1.*, state, name 
+from (select distinct originairportid, carrier, delayinfo
+,count(*) over(partition by originairportid, carrier, delayinfo) cnt
+,avg(depdelay) over (partition by originairportid, carrier, delayinfo) avgdelay 
+ from (select originairportid, carrier, 
+ case when depdelay <= 0 then 'notdelayed' else 'delayed' end delayinfo, 
+ depdelay from otus.flights) a) a1
+ join (select id, state, name from otus.airports) b on a1.originairportid = b.id
+;
+
+drop table otus.toplowcarrierstat;
+CREATE TABLE otus.toplowcarrierstat
+      (carrier int,
+       cnt_delays int,
+       statistic STRING)
+		COMMENT 'table contains statistics of carriers delayed flights that works in states where more than 10 or less than 3 airports'
+;
+insert overwrite table otus.toplowcarrierstat
+select carrier, sum(cnt_delayed) cnt_delays, concat_ws(',', collect_set(concat_ws('_', name, cast(cnt_delayed as string)))) statistic  
+from (select * from (select * from (select originairportid id, state, cnt cnt2 from (
+select state, cnt, (split(airports_ids, ',')) airport_id 
+from (select * from otus.top_count_of_airports a union all select * from otus.low_count_of_airports b) c) d
+LATERAL VIEW explode(airport_id) d AS originairportid) e) g
+join 
+(select * from 
+	(select origineairportid, cnt cnt_delayed, name, carrier, row_number() over (partition by origineairportid order by cnt desc) worth 
+		from otus.flights_delays_statistics where delayinfo ='delayed') r
+	where worth = 1) e1 on g.id = e1.origineairportid) j group by carrier
+;
+show table otus.toplowcarrierstat
