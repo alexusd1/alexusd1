@@ -86,7 +86,7 @@ CREATE EXTERNAL TABLE otus.raw_flight_data
 
 
 drop table otus.top_count_of_airports;
-CREATE EXTERNAL TABLE otus.top_count_of_airports 
+CREATE TABLE otus.top_count_of_airports 
       (state string,
 		airports_ids string,
 		cnt int
@@ -101,11 +101,11 @@ select state, concat_ws(',', collect_set(id)) airport_ids,
 count(*) cnt from otus.airports 
 where state is not null
 group by state
-having count(*) >10 
+having count(*) > 10 
 order by cnt desc, state ;
 --select * from otus.top_count_of_airports;
 drop table otus.low_count_of_airports;
-CREATE EXTERNAL TABLE otus.low_count_of_airports 
+CREATE TABLE otus.low_count_of_airports 
       (state string,
 		airports_ids string,
 		cnt int
@@ -117,7 +117,7 @@ select state, concat_ws(',', collect_set(id)) airport_ids,
 count(*) cnt from otus.airports 
 where state is not null
 group by state--, city 
-having count(*) >10 
+having count(*) < 3 
 order by cnt desc, state ;
 --select * from otus.low_count_of_airports;
 --SHOW TBLPROPERTIES otus.top_count_of_airports;
